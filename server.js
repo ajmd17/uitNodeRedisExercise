@@ -21,56 +21,108 @@ app.use('/css', express.static(path.join(__dirname, 'public/css')));
 
 // routes via express
 app.get('/', function(req, res) {
-
 	res.render('index', {
-		description: "Gentlemen, you can't fight in here! This is the War Room."
+		description: "I am nothing but text on your monitor. I serve no other purpose."
 	});
 });
 
 // redis functionality
 client.on('connect', function() {
-
-    // @TODO1: you should see this in your terminal window if you are connected to redis
-    console.log('redis is connected!');
+  console.log('redis is connected!');
 });
 
 // socket.io functionality
 io.on('connection', function(socket){
-
-  console.log('a user connected via sockets');
-
   // the disconnect event; this triggers when the socket session is terminated (the user closes their browser window)
   socket.on('disconnect', function() {
-    
-    console.log('the user '+socket.username+' disconnected...');
-    // @TODO4: you should be removing your usernames from the set here. Remember to emit the changes!
-
+    if (socket.username !== undefined) {
+      console.log('the user '+socket.username+' disconnected...');
+      // remove user from 'users'
+      client.lrem('users', 0, socket.username, function(err, res) {
+        if (!err) {
+          // get 'users' list
+          client.lrange('users', 0, -1, function(err, res) {
+            if (!err) {
+              // tell clients to update their list of logged users
+              socket.emit('logged users', res);
+              socket.broadcast.emit('logged users', res);
+            } else {
+              console.error(err);
+            }
+          });
+        } else {
+          console.error(err);
+        }
+      });
+    }
   });
 
   socket.on('send message', function(msg) {
-
-    var newmessage = "<strong>"+socket.username+":</strong> "+msg;
-
-    // @TODO3: add your message to the list here! Remember to emit!
+    // send msg object
+    var message = { sender: socket.username, message: msg };
+    client.rpush('messages', JSON.stringify(message), function(err, res) {
+      if (!err) {
+        console.log(res);
+        socket.emit('new message', message);
+        socket.broadcast.emit('new message', message);
+      } else {
+        console.error(err);
+      }
+    });
   });
 
   // listening for when you enter your name
   socket.on('enter name', function(name) {
-
   	socket.username = name;
     socket.broadcast.emit('last logged', name);   // broadcast the last logged user
     socket.emit('last logged', name);             // emit the last logged user
+    
+    // store user in db
+    client.rpush('users', name, function(err, res) {
+      if (!err) {
+        // set last logged user to be me
+        client.set('last_logged', name, function(err, res) {
+          if (!err) {
+            socket.broadcast.emit('last logged', name);
+          } else {
+            console.error(err);
+          }
+        });
 
-    // @TODO2: save your username as a redis string here! Remember to emit the changes!
-    // @TODO4: save your list of usernames here! Remember to emit!
+        // tell clients to update their logged users list
+        client.lrange('users', 0, -1, function(err, res) {
+          if (!err) {
+            socket.emit('logged users', res);
+            socket.broadcast.emit('logged users', res);
+          } else {
+            console.error(err);
+          }
+        });
+      } else {
+        console.error(err);
+      }
+    });
   });
 
-  // logged user functionality; this is triggered when the user opens the browser
+  client.get('last_logged', function(err, res) {
+    if (!err) {
+      socket.emit('last logged', res);
+    } else {
+      console.error(err);
+    }
+  });
 
-  // @TODO3: grab the messages list from redis and emit them here!
-  // @TODO1: show the last logged user via get()
-  // @TODO4: get the set of usernames from redis via smembers()
-  
+  // show messages to user
+  client.lrange('messages', 0, -1, function(err, res) {
+    var messages = res.map(function(el) {
+      try {
+        return JSON.parse(el);
+      } catch (ex) {
+        return {};
+      }
+    });
+    socket.emit('show messages', messages);
+  });
 });
 
 http.listen(8080);
